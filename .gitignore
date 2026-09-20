@@ -1,0 +1,6 @@
+.env
+*.swp
+.service-account-key*
+__pycache__/
+data/
+*.zip

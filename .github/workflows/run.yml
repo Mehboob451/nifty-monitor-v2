@@ -1,0 +1,76 @@
+name: Nifty Monitor
+
+on:
+  schedule:
+    - cron: '45 3 * * 1-5'        # 09:15 IST
+    - cron: '*/15 4-10 * * 1-5'   # 09:30 - 16:15 IST, every 15 minutes (times are UTC)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run even when the market is closed (test run)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nifty-monitor
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Results live on a separate "data" branch that is overwritten every run,
+      # so your repository never grows. GitHub Pages serves that branch.
+      - name: Restore data branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p site && cd site
+          git init -q -b data
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git fetch -q --depth=1 origin data 2>/dev/null; then git checkout -q FETCH_HEAD -- . ; fi
+          mkdir -p data
+
+      - name: Run monitor
+        env:
+          DATA_DIR: site/data
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m src.main ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }}
+
+      - name: Publish results
+        run: |
+          cp web/index.html site/index.html
+          touch site/.nojekyll
+          cd site
+          git config user.name "nifty-monitor-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Update $(date -u +'%Y-%m-%d %H:%M') UTC"
+          git push -q --force origin HEAD:data
+
+      # GitHub pauses scheduled workflows after 60 quiet days; this adds a tiny commit when needed.
+      - name: Keep schedule alive
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt 1728000 ]; then
+            git config user.name "nifty-monitor-bot"
+            git config user.email "bot@users.noreply.github.com"
+            git commit --allow-empty -q -m "chore: keep scheduled workflow active"
+            git push -q origin HEAD:${{ github.event.repository.default_branch }}
+          fi
